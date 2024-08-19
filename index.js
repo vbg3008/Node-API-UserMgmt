@@ -6,6 +6,9 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import otpGenerator from "otp-generator";
+import multer from "multer";
+import path from "path";
+import {authenticateJWT} from "./Middleware/jwtAuth.js"
 
 const app = express();
 app.use(express.json());
@@ -36,6 +39,19 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASSWORD,
   },
 });
+
+// File upload setup using multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/'); // Specify the upload directory
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); // Unique file name
+  }
+});
+
+const upload = multer({ storage });
+
 
 app.get("/getall", async (req, res) => {
   con.query("select * from Users", function (err, result) {
@@ -123,10 +139,10 @@ app.post("/login", async (req, res) => {
     const token = jwt.sign(
       { userID: user.userID, emailid: user.emailid },
       process.env.JWT_SECRET,
-      { expiresIn: "1h" } // Token expires in 1 hour
+      { expiresIn: "1h" ,  } // Token expires in 1 hour
     );
     // console.log(`logged in user ${user.userID}`);
-    // console.log(token);
+    console.log(token);
 
     res.json({ message: "Login successful", token });
   });
@@ -328,4 +344,34 @@ app.post('/update-password-with-question', async (req, res) => {
     console.error("Error updating password:", err);
     return res.status(500).send("Error updating password");
   }
+});
+
+
+
+
+// File upload route (login only)
+app.post('/upload', authenticateJWT, upload.single('file'), (req, res) => {
+  const { year, month, type } = req.body;
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).send('No file uploaded');
+  }
+
+  const fileName = file.path;
+  console.log(fileName)
+  const uploadTimeStamp = new Date();
+  const userID = req.user.userID; // Get userID from the authenticated user
+
+  // Insert file details into UserUploadFiles table
+  const sql = `INSERT INTO UserUploadFiles (userID, fileName, uploadTimeStamp, year, month, type) VALUES (?, ?, ?, ?, ?, ?)`;
+  const values = [userID, fileName, uploadTimeStamp, year, month, type];
+
+  con.query(sql, values, function (err, result) {
+    if (err) {
+      console.error("Error executing query:", err);
+      return res.status(500).send("Error executing query");
+    }
+    res.send("File uploaded and information saved successfully");
+  });
 });

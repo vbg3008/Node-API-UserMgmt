@@ -2,6 +2,7 @@ create database UserDetails;
 use UserDetails;
 
 
+
 CREATE TABLE Users (
     ID INT AUTO_INCREMENT PRIMARY KEY,
     userID VARCHAR(50) UNIQUE NOT NULL,
@@ -25,4 +26,18 @@ INSERT INTO Users (userID, emailid, mobileNo, password, SchoolName, FavHobby) VA
 ('user7', 'vbg3008@example.com', '12345670', 'password1', 'Greenwood High', 'Reading');
 
 ALTER TABLE Users ADD COLUMN otp VARCHAR(6) DEFAULT NULL;
+
+CREATE TABLE UserUploadFiles (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  userID VARCHAR(255) NOT NULL,
+  fileName VARCHAR(255) NOT NULL,
+  uploadTimeStamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  year INT NOT NULL,
+  month INT NOT NULL,
+  type VARCHAR(50) NOT NULL,
+  FOREIGN KEY (userID) REFERENCES Users(userID)
+);
+
+select * from UserUploadFiles;
+
 
