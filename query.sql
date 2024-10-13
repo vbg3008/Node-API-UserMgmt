@@ -1,5 +1,6 @@
 create database UserDetails;
 use UserDetails;
+show tables;
 
 
 

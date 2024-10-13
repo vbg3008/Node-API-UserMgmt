@@ -3,6 +3,9 @@ import cors from "cors";
 import dotenv from "dotenv";
 import mysql from "mysql";
 import bcrypt from "bcrypt";
+import csvParser from 'csv-parser';
+import xlsx from 'xlsx';
+import fs from 'fs';
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import otpGenerator from "otp-generator";
@@ -40,17 +43,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// File upload setup using multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/'); // Specify the upload directory
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // Unique file name
-  }
-});
 
-const upload = multer({ storage });
 
 
 app.get("/getall", async (req, res) => {
@@ -112,7 +105,7 @@ app.post("/login", async (req, res) => {
 
   // Validate request data
   if (!userID || !password) {
-    return res.status(400).send("UserID and password are required");
+    return res.status(400).send("userID and password are required");
   }
 
   // Retrieve the user from the database
@@ -255,10 +248,9 @@ app.post("/verify-otp", (req, res) => {
 });
 
 // Route to update password
-app.get("/update-password", async (req, res) => {
+app.post("/update-password", async (req, res) => {
   // const token = req.params;
   const { password , token } = req.body;
-  console.log(token, password);
 
   // Validate token presence
   if (!token) {
@@ -347,10 +339,33 @@ app.post('/update-password-with-question', async (req, res) => {
 });
 
 
+// Restrict file type
+const fileFilter = (req, file, cb) => {
+  const fileTypes = /csv|xlsx/;
+  const extname = fileTypes.test(path.extname(file.originalname).toLowerCase());
+  if (extname) {
+    cb(null, true);
+  } else {
+    cb('Error: Only CSV or Excel files are allowed');
+  }
+};
+
+// Update multer storage configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); // Save with timestamp
+  },
+});
+
+const upload = multer({ storage, fileFilter });
 
 
-// File upload route (login only)
-app.post('/upload', authenticateJWT, upload.single('file'), (req, res) => {
+
+// File upload route (with table creation)
+app.post('/upload', authenticateJWT, upload.single('file'), async (req, res) => {
   const { year, month, type } = req.body;
   const file = req.file;
 
@@ -358,20 +373,105 @@ app.post('/upload', authenticateJWT, upload.single('file'), (req, res) => {
     return res.status(400).send('No file uploaded');
   }
 
-  const fileName = file.path;
-  console.log(fileName)
+  const fileName = file.filename;  // Unique file name
+  const filePath = file.path;      // Full path
+  const userID = req.user.userID;  // Get userID from the authenticated user
   const uploadTimeStamp = new Date();
-  const userID = req.user.userID; // Get userID from the authenticated user
 
-  // Insert file details into UserUploadFiles table
-  const sql = `INSERT INTO UserUploadFiles (userID, fileName, uploadTimeStamp, year, month, type) VALUES (?, ?, ?, ?, ?, ?)`;
-  const values = [userID, fileName, uploadTimeStamp, year, month, type];
+  // Determine file extension
+  const ext = path.extname(file.originalname).toLowerCase();
 
-  con.query(sql, values, function (err, result) {
-    if (err) {
-      console.error("Error executing query:", err);
-      return res.status(500).send("Error executing query");
+  let columns = [];
+  let dataRows = [];
+
+  try {
+    // Process CSV file
+    if (ext === '.csv') {
+      const csvData = [];
+      fs.createReadStream(filePath)
+        .pipe(csvParser())
+        .on('headers', (headers) => {
+          columns = headers;
+        })
+        .on('data', (row) => {
+          csvData.push(row);
+        })
+        .on('end', () => {
+          dataRows = csvData;
+          createTableFromUpload(fileName, columns, dataRows, userID);
+        });
     }
-    res.send("File uploaded and information saved successfully");
-  });
+
+    // Process Excel file
+    if (ext === '.xlsx') {
+      const workbook = xlsx.readFile(filePath);
+      const sheetName = workbook.SheetNames[0]; // Process first sheet
+      const sheetData = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], {
+        header: 1, // Use the first row for column headers
+      });
+
+      columns = sheetData[0];
+      dataRows = sheetData.slice(1); // All rows after the headers
+      createTableFromUpload(fileName, columns, dataRows, userID);
+    }
+
+    // Insert file details into `UserUploadFiles`
+    const sql = `INSERT INTO UserUploadFiles (userID, fileName, uploadTimeStamp, year, month, type) VALUES (?, ?, ?, ?, ?, ?)`;
+    const values = [userID, fileName, uploadTimeStamp, year, month, type];
+
+    con.query(sql, values, function (err, result) {
+      if (err) {
+        console.error('Error executing query:', err);
+        return res.status(500).send('Error saving file details');
+      }
+      res.send('File uploaded and table created successfully');
+    });
+
+  } catch (err) {
+    console.error('Error processing file:', err);
+    return res.status(500).send('Error processing file');
+  }
 });
+
+// Helper function to create a new table from the uploaded file
+function createTableFromUpload(fileName, columns, dataRows, userID) {
+  // Sanitize file name and userID for table name
+  const sanitizedFileName = fileName.replace(/\W+/g, '_'); // Replace non-word characters
+  const sanitizedUserID = userID.replace(/\W+/g, '_');     // Sanitize userID
+
+  // Use the format UserID-TableName
+  const tableName = `${sanitizedUserID}_${sanitizedFileName}`; // e.g., user001_myfile.csv -> user001_myfile_csv
+
+  // Sanitize columns: replace spaces or invalid characters and add backticks around each column name
+  const sanitizedColumns = columns.map(col => `\`${col.replace(/\W+/g, '_')}\` TEXT`).join(', ');
+
+  // SQL to create table
+  const createTableSQL = `CREATE TABLE ${tableName} (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ${sanitizedColumns},
+    userID VARCHAR(255) NOT NULL,
+    FOREIGN KEY (userID) REFERENCES Users(userID)
+  );`;
+
+  // Create the table
+  con.query(createTableSQL, (err, result) => {
+    if (err) {
+      console.error('Error creating table:', err);
+      return;
+    }
+
+    // Insert rows into the table
+    dataRows.forEach((row) => {
+      const values = [...row, userID];
+      const placeholders = values.map(() => '?').join(', ');
+      const insertRowSQL = `INSERT INTO ${tableName} (${columns.map(col => `\`${col.replace(/\W+/g, '_')}\``).join(', ')}, userID) VALUES (${placeholders})`;
+      con.query(insertRowSQL, values, (err) => {
+        if (err) {
+          console.error('Error inserting row:', err);
+        }
+      });
+    });
+
+    console.log(`Table ${tableName} created and data inserted.`);
+  });
+}
