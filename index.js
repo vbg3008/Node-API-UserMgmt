@@ -356,7 +356,7 @@ const storage = multer.diskStorage({
     cb(null, 'uploads/');
   },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // Save with timestamp
+    cb(null,file.originalname); // Save with timestamp
   },
 });
 
